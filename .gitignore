@@ -1,0 +1,25 @@
+# Project-specific: internal notes and source data, not for public repo
+CLAUDE.md
+data_processing.qgz
+data/
+
+# Generated outputs (regenerable from data/, not committed)
+outputs/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/settings.local.json

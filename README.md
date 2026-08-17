@@ -33,7 +33,25 @@ venv/Scripts/pip install -r requirements.txt   # Windows
 # source venv/bin/activate && pip install -r requirements.txt   # macOS/Linux
 ```
 
-## Usage
+## Web UI (recommended)
+
+```bash
+venv/Scripts/python app.py   # Windows
+# venv/bin/python app.py     # macOS/Linux
+```
+
+Then open **http://localhost:8050**. Drag and drop your own DSM, DTM,
+orthophoto, and land-boundary files (a planting-row layer is optional and
+improves young-tree detection accuracy), click **Run Canopy Cover
+Detection**, and the overlay + 3 KPIs appear alongside download links for
+every output. Everything runs locally on your machine — files are never
+uploaded anywhere else.
+
+Accepted vector formats: `.gpkg`, `.geojson`. Shapefiles are supported too —
+drop the whole bundle (`.shp` + `.shx` + `.dbf` + `.prj`) onto the same
+drop zone at once.
+
+## Library / CLI usage
 
 ```python
 from canopy_cover import compute_canopy_cover, CanopyConfig
@@ -79,12 +97,15 @@ canopy_cover/
   pipeline.py        # compute_canopy_cover(...) orchestration + exports
   cli.py              # CLI wrapper
 scripts/eda.py        # exploratory data analysis (CHM/ExG histograms) — run before tuning thresholds on a new plot
+app.py                 # drag-and-drop web UI (Dash), see "Web UI" above
 ```
+
+Each run of the web UI writes to a per-session temp folder (`.runs/`,
+cleared on every restart of `app.py`) rather than `outputs/`, which is only
+used by the CLI/library path.
 
 ## Status / roadmap
 
-Current pipeline is validated on three real plots via a recall check
-against tracked tree locations (not yet a full precision/recall validation
-against confirmed field ground truth). A standalone, drag-and-drop web UI
-(upload your own DSM/DTM/orthophoto/boundary, run detection, download
-results) is planned but not yet built.
+Pipeline validated on three real plots via a recall check against tracked
+tree locations (not yet a full precision/recall validation against
+confirmed field ground truth) — see `CLAUDE.md` in a full checkout.

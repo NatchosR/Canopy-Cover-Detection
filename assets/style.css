@@ -22,16 +22,84 @@ body {
   font-size: 14px;
 }
 
-.controls {
-  margin: 16px 0 20px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin: 20px 0;
 }
 
-.controls label {
+.upload-slot {
+  display: flex;
+  flex-direction: column;
+}
+
+.upload-label {
+  font-size: 13px;
   font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.req-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #c1121f;
+  margin-left: 4px;
+}
+
+.opt-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #8a978e;
+  margin-left: 4px;
+}
+
+.upload-zone {
+  border: 2px dashed #b7c9bd;
+  border-radius: 10px;
+  background: white;
+  padding: 18px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: #6b7a70;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  flex: 1;
+}
+
+.upload-zone:hover {
+  border-color: #2c7a4b;
+  background: #f4faf6;
+}
+
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 8px 0 28px;
+}
+
+.run-button {
+  background: #1b4332;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 22px;
   font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.run-button:hover {
+  background: #143728;
+}
+
+.run-error {
+  color: #c1121f;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .validation-banner {

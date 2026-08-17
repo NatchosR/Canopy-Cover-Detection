@@ -6,6 +6,9 @@ data/
 # Generated outputs (regenerable from data/, not committed)
 outputs/
 
+# Ephemeral per-session working files for the web UI (app.py)
+.runs/
+
 # Python
 venv/
 .venv/

@@ -54,6 +54,7 @@ DOWNLOADABLE_FILES = [
     ("canopy_mask.tif", "Canopy mask (GeoTIFF, 4 bands)"),
     ("canopy_layers.gpkg", "Canopy layers (GeoPackage)"),
     ("canopy_polygons.geojson", "Canopy polygons (GeoJSON)"),
+    ("detected_trees.gpkg", "Detected trees (points, GeoPackage)"),
     ("summary.json", "KPI summary (JSON)"),
     ("overlay.png", "Overlay preview (PNG)"),
 ]
@@ -322,6 +323,10 @@ def build_layout():
                     html.Div(id="missing-warning"),
                 ],
                 className="basket-container",
+            ),
+            html.Div(
+                "⚠ This can take some time, especially for large images — sometimes 10-15 minutes.",
+                className="processing-warning",
             ),
             html.Div(
                 [

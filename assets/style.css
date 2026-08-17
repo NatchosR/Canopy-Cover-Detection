@@ -148,6 +148,17 @@ body {
   margin-top: 6px;
 }
 
+.processing-warning {
+  font-size: 12px;
+  color: #a3671a;
+  background: #fdf3e7;
+  border: 1px solid #f0c98a;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 16px;
+  display: inline-block;
+}
+
 .run-row {
   display: flex;
   align-items: center;

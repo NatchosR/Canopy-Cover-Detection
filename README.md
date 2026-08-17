@@ -12,13 +12,15 @@ detection into one number.
 
 ## KPIs
 
-- **KPI1 — Total Canopy** = KPI2 + KPI3.
+- **KPI1 — Total Canopy** = KPI2 + KPI3 + other vegetation. Shrubs/hedges
+  are still canopy, so they count toward the total.
 - **KPI2 — Mature Canopy**: trees clearly identifiable as trees, any
   species (height + greenness + compact shape).
 - **KPI3 — Young Canopy**: spectral *candidate* blobs too small/short to
   be unambiguous — reported as both a cover % and a blob count.
 - **Other vegetation** (scrub/hedge/"mato"): tracked and exported as its
-  own layer, but **not** a KPI and excluded from KPI1.
+  own layer for transparency, and included in KPI1, but not broken out as
+  its own numbered KPI.
 
 All KPIs are marked `UNVALIDATED` in every output until checked against
 field-verified reference points — see `CLAUDE.md` in a full checkout for
@@ -84,8 +86,9 @@ Each run writes to `outputs/<plot_name>/`:
 | File | Contents |
 |---|---|
 | `canopy_mask.tif` | 4-band GeoTIFF: total / mature / young-candidate / other-vegetation |
-| `canopy_layers.gpkg` | Vector layers: `mature_trees`, `young_tree_candidates`, `other_vegetation` |
+| `canopy_layers.gpkg` | Vector polygon layers: `mature_trees`, `young_tree_candidates`, `other_vegetation` |
 | `canopy_polygons.geojson` | Same polygons as GeoJSON |
+| `detected_trees.gpkg` | One point per detected blob (its centroid), attributed `class` = Mature tree / Young tree / Other — lighter than the polygon layers, useful for counting/importing elsewhere |
 | `summary.json` | KPI values, blob counts, detection metadata, validation status |
 | `overlay.png` | Orthophoto with detection layers overlaid |
 

@@ -1,9 +1,11 @@
 """Canopy cover computation for an agroforestry plot.
 
-KPI structure (per user decision, 2026-08-14 revision):
+KPI structure (per user decision, revised 2026-08-17):
 
-- KPI1 total_canopy_pct  = KPI2 + KPI3 (mature + young-candidate canopy).
-                           Does NOT include "other vegetation" (mato/scrub).
+- KPI1 total_canopy_pct  = KPI2 + KPI3 + other vegetation. Shrubs/hedges are
+                           still canopy, so they count toward the total --
+                           they just aren't broken out as their own numbered
+                           KPI (see below).
 - KPI2 mature_canopy_pct = trees clearly identifiable as trees (height +
                            greenness + compact shape) -- olives, oaks,
                            almonds, whatever species, doesn't matter, just
@@ -12,8 +14,10 @@ KPI structure (per user decision, 2026-08-14 revision):
                            too small/short to be unambiguous. Always reported
                            with both a % and a blob count, since the count is
                            itself informative (see canopy_cover.validate).
-- other_vegetation_pct   = NOT a KPI. Shrub/hedge/"mato" -- tracked and
-                           exported as its own layer but excluded from KPI1.
+- other_vegetation_pct   = NOT its own numbered KPI, but included in KPI1.
+                           Shrub/hedge/"mato" -- tracked and exported as its
+                           own layer for transparency about what's driving
+                           the total.
 
 Call `compute_canopy_cover(...)` directly, or use `python -m canopy_cover.cli`.
 """
@@ -27,7 +31,7 @@ import geopandas as gpd
 import numpy as np
 import rasterio
 import rasterio.features
-from skimage.measure import label
+from skimage.measure import label, regionprops
 
 from .raster_utils import load_aligned_stack, compute_chm
 from .vegetation_index import excess_green
@@ -150,7 +154,7 @@ def compute_canopy_cover(
     mature_area_m2 = mature_mask[valid].sum() * px_area
     other_veg_area_m2 = other_veg_mask[valid].sum() * px_area
     young_area_m2 = young_mask[valid].sum() * px_area
-    total_area_m2 = mature_area_m2 + young_area_m2  # excludes other_vegetation (not a KPI)
+    total_area_m2 = mature_area_m2 + young_area_m2 + other_veg_area_m2
 
     n_young_blobs = int(label(young_mask, connectivity=2).max())
 
@@ -191,7 +195,7 @@ def _export_outputs(outdir: Path, stack, mature_mask, other_veg_mask, young_mask
     transform, crs = stack["transform"], stack["crs"]
     h, w = mature_mask.shape
 
-    total_mask = mature_mask | young_mask  # excludes other_vegetation, matches KPI1
+    total_mask = mature_mask | young_mask | other_veg_mask  # matches KPI1
 
     mask_stack = np.stack([
         total_mask.astype(np.uint8),
@@ -230,11 +234,44 @@ def _export_outputs(outdir: Path, stack, mature_mask, other_veg_mask, young_mask
         gdf.to_file(gpkg_path, layer=layer_name, driver="GPKG")
         any_layer = True
 
+    _export_detected_trees(outdir, transform, crs, mature_mask, young_mask, other_veg_mask)
+
     with open(outdir / "summary.json", "w") as f:
         json.dump(result, f, indent=2)
 
     _save_overlay_png(outdir / "overlay.png", stack, mature_mask, other_veg_mask, young_mask)
     export_web_layers(outdir, stack, mature_mask, other_veg_mask, young_mask)
+
+
+def _export_detected_trees(outdir: Path, transform, crs, mature_mask, young_mask, other_veg_mask):
+    """One point per detected blob (its centroid), classed as Mature tree /
+    Young tree / Other. Much lighter than the polygon layers and easier to
+    count/import elsewhere -- particularly useful on plots dominated by
+    thousands of tiny young-tree candidate blobs (e.g. plot_3)."""
+    import shapely.geometry
+
+    px_area = pixel_area_m2(transform)
+    records = []
+    for class_label, mask in [
+        ("Mature tree", mature_mask),
+        ("Young tree", young_mask),
+        ("Other", other_veg_mask),
+    ]:
+        lbl = label(mask, connectivity=2)
+        for prop in regionprops(lbl):
+            y, x = prop.centroid
+            mx, my = transform * (x, y)
+            records.append({
+                "class": class_label,
+                "area_m2": prop.area * px_area,
+                "geometry": shapely.geometry.Point(mx, my),
+            })
+
+    if not records:
+        return
+    gdf = gpd.GeoDataFrame(records, crs=crs)
+    gdf.insert(0, "tree_id", range(1, len(gdf) + 1))
+    gdf.to_file(outdir / "detected_trees.gpkg", layer="detected_trees", driver="GPKG")
 
 
 def _save_overlay_png(path, stack, mature_mask, other_veg_mask, young_mask):

@@ -2,11 +2,13 @@
 
 Run locally: venv/Scripts/python app.py, then open http://localhost:8050
 
-The user drags and drops their own DSM, DTM, orthophoto, and land-boundary
-files (planting rows optional), clicks "Run Canopy Cover Detection", and
-gets the overlay + 3 KPIs plus every output available for download. No
-precomputed/example data is involved -- this is the distributable UI
-described in CLAUDE.md's "Next session (Monday)" plan.
+The user drags and drops ALL their files (DSM, DTM, orthophoto, boundary,
+optional planting rows) into one basket at once. Files are auto-classified
+by filename/content and shown with an editable role dropdown so
+misclassifications can be corrected. The Run button is disabled until every
+required role is covered. Results reuse the KPI cards / layered viewer /
+download links built earlier, now driven by the basket instead of five
+separate upload slots.
 """
 import base64
 import re
@@ -16,7 +18,9 @@ from pathlib import Path
 
 import dash
 import flask
-from dash import ALL, Dash, Input, Output, State, dcc, html
+import rasterio
+from dash import ALL, Dash, Input, Output, State, ctx, dcc, html
+from dash.exceptions import PreventUpdate
 from werkzeug.utils import secure_filename
 
 from canopy_cover.pipeline import CanopyConfig, compute_canopy_cover
@@ -28,18 +32,22 @@ if RUNS_DIR.exists():
     shutil.rmtree(RUNS_DIR)
 RUNS_DIR.mkdir(exist_ok=True)
 
-REQUIRED_INPUTS = ["dsm", "dtm", "ortho", "boundary"]
-OPTIONAL_INPUTS = ["rows"]
-UPLOAD_KEYS = REQUIRED_INPUTS + OPTIONAL_INPUTS
-INPUT_LABELS = {
-    "dsm": "DSM — Digital Surface Model",
-    "dtm": "DTM — Digital Terrain Model",
-    "ortho": "Orthophoto (RGB)",
-    "boundary": "Land boundary",
-    "rows": "Planting rows (optional)",
+ROLE_LABELS = {
+    "dsm": "DSM",
+    "dtm": "DTM",
+    "ortho": "Orthophoto",
+    "boundary": "Boundary",
+    "rows": "Planting rows",
 }
-# Boundary/rows accept multi-file drops (a .shp needs its .shx/.dbf/.prj siblings).
-MULTI_FILE_KEYS = {"boundary", "rows"}
+REQUIRED_ROLES = ["dsm", "dtm", "ortho", "boundary"]
+OPTIONAL_ROLES = ["rows"]
+ROLE_DROPDOWN_OPTIONS = [{"label": "— ignore —", "value": ""}] + [
+    {"label": label, "value": role} for role, label in ROLE_LABELS.items()
+]
+
+VECTOR_SIDECAR_EXT = {".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".sbn", ".sbx"}
+VECTOR_STANDALONE_EXT = {".gpkg", ".geojson", ".json"}
+RASTER_EXT = {".tif", ".tiff"}
 VECTOR_EXT_PRIORITY = (".gpkg", ".geojson", ".json", ".shp")
 
 DOWNLOADABLE_FILES = [
@@ -59,43 +67,82 @@ def _session_dir(session_id: str) -> Path:
     if not SESSION_ID_RE.match(session_id or ""):
         raise ValueError("invalid session id")
     d = RUNS_DIR / session_id
-    (d / "inputs").mkdir(parents=True, exist_ok=True)
+    (d / "inputs" / "_raw").mkdir(parents=True, exist_ok=True)
     (d / "results").mkdir(parents=True, exist_ok=True)
     return d
 
 
-def _save_upload_slot(dest_dir: Path, contents, filenames) -> list[str]:
-    """Decode and write one or more uploaded files to dest_dir. Skips the
-    write if the same set of filenames is already on disk (Dash re-delivers
-    unchanged `contents` for every matched component whenever any sibling
-    upload fires), and clears stale files when the slot is replaced."""
-    if not isinstance(contents, list):
-        contents, filenames = [contents], [filenames]
-    safe_names = [secure_filename(fn) or "file" for fn in filenames]
-
-    existing = {p.name for p in dest_dir.glob("*")} if dest_dir.exists() else set()
-    if existing != set(safe_names):
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        for content, name in zip(contents, safe_names):
-            _, b64data = content.split(",", 1)
-            (dest_dir / name).write_bytes(base64.b64decode(b64data))
-
-    return [str(dest_dir / name) for name in safe_names]
-
-
 def _pick_vector_path(paths) -> str:
-    """Given one or more uploaded vector files (possibly a shapefile bundle),
-    pick the path to actually hand to geopandas."""
-    if isinstance(paths, str):
-        return paths
+    """Given one or more files (possibly a shapefile bundle), pick the path
+    to actually hand to geopandas."""
     paths = [Path(p) for p in paths]
     for ext in VECTOR_EXT_PRIORITY:
         for p in paths:
             if p.suffix.lower() == ext:
                 return str(p)
     return str(paths[0])
+
+
+def _guess_raster_role(filename: str, path: Path):
+    name = filename.lower()
+    if "dsm" in name:
+        return "dsm"
+    if "dtm" in name:
+        return "dtm"
+    if any(k in name for k in ("ortho", "rgb", "photo")):
+        return "ortho"
+    # Fallback: DSM/DTM are single-band float rasters, orthophotos are
+    # multi-band uint8 -- this alone can't distinguish DSM from DTM.
+    try:
+        with rasterio.open(path) as src:
+            if src.count >= 3 and src.dtypes[0] == "uint8":
+                return "ortho"
+    except Exception:
+        pass
+    return None
+
+
+def _guess_vector_role(filename: str):
+    name = filename.lower()
+    if any(k in name for k in ("row", "line", "planting")):
+        return "rows"
+    if any(k in name for k in ("boundary", "bound", "land", "parcel", "plot")):
+        return "boundary"
+    return None
+
+
+def _scan_and_classify(raw_dir: Path, overrides: dict) -> list:
+    """Rebuild the basket item list from whatever files currently sit in
+    raw_dir, grouping shapefile sidecars and applying any user overrides."""
+    files = sorted(raw_dir.glob("*")) if raw_dir.exists() else []
+    shp_groups = {}
+    standalone = []
+    for p in files:
+        if p.suffix.lower() in VECTOR_SIDECAR_EXT:
+            shp_groups.setdefault(p.stem.lower(), []).append(p)
+        else:
+            standalone.append(p)
+
+    items = []
+    for paths in shp_groups.values():
+        shp = next((p for p in paths if p.suffix.lower() == ".shp"), paths[0])
+        key = shp.name
+        role = overrides[key] if key in overrides else _guess_vector_role(shp.name)
+        items.append({"key": key, "filenames": [p.name for p in paths], "paths": [str(p) for p in paths], "role": role})
+
+    for p in standalone:
+        ext = p.suffix.lower()
+        key = p.name
+        if ext in RASTER_EXT:
+            role = overrides[key] if key in overrides else _guess_raster_role(p.name, p)
+        elif ext in VECTOR_STANDALONE_EXT:
+            role = overrides[key] if key in overrides else _guess_vector_role(p.name)
+        else:
+            role = overrides.get(key)
+        items.append({"key": key, "filenames": [p.name], "paths": [str(p)], "role": role})
+
+    items.sort(key=lambda it: it["filenames"][0].lower())
+    return items
 
 
 app = Dash(__name__, title="Canopy Cover Detection", suppress_callback_exceptions=True)
@@ -115,25 +162,20 @@ def serve_result(session_id, filename):
 
 # ---------------------------------------------------------------- components
 
-def upload_slot(key):
-    required = key in REQUIRED_INPUTS
+def item_card(item):
     return html.Div(
         [
-            html.Div(
-                [
-                    INPUT_LABELS[key],
-                    html.Span(" required" if required else " optional", className="req-tag" if required else "opt-tag"),
-                ],
-                className="upload-label",
+            html.Div(", ".join(item["filenames"]), className="item-filename"),
+            dcc.Dropdown(
+                id={"type": "role-select", "key": item["key"]},
+                options=ROLE_DROPDOWN_OPTIONS,
+                value=item["role"] or "",
+                clearable=False,
+                className="role-select",
             ),
-            dcc.Upload(
-                id={"type": "upload", "key": key},
-                children=html.Div("Drag & drop here, or click to browse", id={"type": "upload-status", "key": key}),
-                className="upload-zone",
-                multiple=key in MULTI_FILE_KEYS,
-            ),
+            html.Button("×", id={"type": "remove-item", "key": item["key"]}, n_clicks=0, className="remove-item-btn"),
         ],
-        className="upload-slot",
+        className="item-card" if item["role"] else "item-card unassigned",
     )
 
 
@@ -244,24 +286,55 @@ def build_layout():
                 [
                     html.H1("Canopy Cover Detection"),
                     html.P(
-                        "Drop your drone survey products below, run detection, and download the results. "
+                        "Drop everything below, run detection, and download the results. "
                         "Everything runs locally -- your files never leave this machine.",
                         className="subtitle",
                     ),
                 ],
                 className="header",
             ),
-            html.Div([upload_slot(k) for k in UPLOAD_KEYS], className="upload-grid"),
             html.Div(
                 [
-                    html.Button("Run Canopy Cover Detection", id="run-button", n_clicks=0, className="run-button"),
+                    dcc.Upload(
+                        id="basket-upload",
+                        children=html.Div(
+                            [
+                                html.Div("Drop all your files here", className="basket-title"),
+                                html.Div(
+                                    "DSM, DTM, orthophoto, and boundary are required; a planting-row layer is "
+                                    "optional. Drop them all at once, or add more later -- files are sorted "
+                                    "automatically and you can fix any mistakes below.",
+                                    className="basket-subtitle",
+                                ),
+                            ]
+                        ),
+                        className="basket-zone",
+                        multiple=True,
+                    ),
+                    html.Div(
+                        [
+                            html.Div("Detected files", className="panel-title-inline"),
+                            html.Button("Clear all", id="clear-basket-btn", n_clicks=0, className="clear-btn"),
+                        ],
+                        className="basket-list-header",
+                    ),
+                    html.Div(id="basket-list", className="basket-list", children=html.Div("No files added yet.", className="basket-empty")),
+                    html.Div(id="missing-warning"),
+                ],
+                className="basket-container",
+            ),
+            html.Div(
+                [
+                    html.Button("Run Canopy Cover Detection", id="run-button", n_clicks=0, className="run-button", disabled=True),
                     html.Div(id="run-error"),
                 ],
                 className="run-row",
             ),
             dcc.Loading(html.Div(id="results-container"), type="circle", color="#2c7a4b"),
             dcc.Store(id="session-id", data=session_id),
-            dcc.Store(id="upload-paths", data={}),
+            dcc.Store(id="raw-version", data=0),
+            dcc.Store(id="role-overrides", data={}),
+            dcc.Store(id="basket-items", data=[]),
         ],
         className="app-container",
     )
@@ -273,46 +346,133 @@ app.layout = build_layout
 # ------------------------------------------------------------------ callbacks
 
 @app.callback(
-    Output({"type": "upload-status", "key": ALL}, "children"),
-    Output("upload-paths", "data"),
-    Input({"type": "upload", "key": ALL}, "contents"),
-    State({"type": "upload", "key": ALL}, "filename"),
-    State({"type": "upload", "key": ALL}, "id"),
+    Output("raw-version", "data"),
+    Input("basket-upload", "contents"),
+    State("basket-upload", "filename"),
     State("session-id", "data"),
-    State("upload-paths", "data"),
+    State("raw-version", "data"),
     prevent_initial_call=True,
 )
-def on_upload(all_contents, all_filenames, all_ids, session_id, paths_store):
-    paths_store = dict(paths_store or {})
-    session = _session_dir(session_id)
-    statuses = []
-    for contents, filenames, id_ in zip(all_contents, all_filenames, all_ids):
-        key = id_["key"]
-        if contents is None:
-            if key in paths_store:
-                saved = paths_store[key]
-                names = [Path(p).name for p in saved] if isinstance(saved, list) else [Path(saved).name]
-                statuses.append(f"✓ {', '.join(names)}")
-            else:
-                statuses.append("Drag & drop here, or click to browse")
-            continue
-        saved_paths = _save_upload_slot(session / "inputs" / key, contents, filenames)
-        paths_store[key] = saved_paths if key in MULTI_FILE_KEYS else saved_paths[0]
-        statuses.append(f"✓ {', '.join(Path(p).name for p in saved_paths)}")
-    return statuses, paths_store
+def on_basket_drop(contents_list, filenames_list, session_id, version):
+    if not contents_list:
+        raise PreventUpdate
+    if not isinstance(contents_list, list):
+        contents_list, filenames_list = [contents_list], [filenames_list]
+
+    raw_dir = _session_dir(session_id) / "inputs" / "_raw"
+    for content, filename in zip(contents_list, filenames_list):
+        safe_name = secure_filename(filename) or "file"
+        path = raw_dir / safe_name
+        if path.exists():
+            continue  # already have this exact file; Dash re-delivers old contents on rerender
+        _, b64data = content.split(",", 1)
+        path.write_bytes(base64.b64decode(b64data))
+
+    return (version or 0) + 1
+
+
+@app.callback(
+    Output("raw-version", "data", allow_duplicate=True),
+    Input({"type": "remove-item", "key": ALL}, "n_clicks"),
+    State("session-id", "data"),
+    State("raw-version", "data"),
+    prevent_initial_call=True,
+)
+def on_remove_item(n_clicks_list, session_id, version):
+    triggered = ctx.triggered_id
+    if not triggered or not any(n_clicks_list):
+        raise PreventUpdate
+    key = triggered["key"]
+    stem = Path(key).stem.lower()
+    raw_dir = _session_dir(session_id) / "inputs" / "_raw"
+    for p in raw_dir.glob("*"):
+        if p.name == key or (p.stem.lower() == stem and p.suffix.lower() in VECTOR_SIDECAR_EXT):
+            p.unlink(missing_ok=True)
+    return (version or 0) + 1
+
+
+@app.callback(
+    Output("raw-version", "data", allow_duplicate=True),
+    Output("role-overrides", "data", allow_duplicate=True),
+    Input("clear-basket-btn", "n_clicks"),
+    State("session-id", "data"),
+    State("raw-version", "data"),
+    prevent_initial_call=True,
+)
+def on_clear_basket(n_clicks, session_id, version):
+    if not n_clicks:
+        raise PreventUpdate
+    raw_dir = _session_dir(session_id) / "inputs" / "_raw"
+    if raw_dir.exists():
+        shutil.rmtree(raw_dir)
+    return (version or 0) + 1, {}
+
+
+@app.callback(
+    Output("role-overrides", "data"),
+    Input({"type": "role-select", "key": ALL}, "value"),
+    State({"type": "role-select", "key": ALL}, "id"),
+    State("role-overrides", "data"),
+    prevent_initial_call=True,
+)
+def on_role_change(values, ids, overrides):
+    overrides = dict(overrides or {})
+    for value, id_ in zip(values, ids):
+        overrides[id_["key"]] = (value or None)
+    return overrides
+
+
+@app.callback(
+    Output("basket-items", "data"),
+    Input("raw-version", "data"),
+    Input("role-overrides", "data"),
+    State("session-id", "data"),
+    prevent_initial_call=True,
+)
+def rebuild_basket_items(version, overrides, session_id):
+    raw_dir = _session_dir(session_id) / "inputs" / "_raw"
+    return _scan_and_classify(raw_dir, overrides or {})
+
+
+@app.callback(
+    Output("basket-list", "children"),
+    Output("missing-warning", "children"),
+    Output("run-button", "disabled"),
+    Input("basket-items", "data"),
+)
+def render_basket(items):
+    items = items or []
+    list_children = [item_card(it) for it in items] if items else html.Div("No files added yet.", className="basket-empty")
+
+    roles_present = [it["role"] for it in items if it["role"]]
+    missing = [ROLE_LABELS[r] for r in REQUIRED_ROLES if r not in roles_present]
+    dup_roles = {r for r in roles_present if roles_present.count(r) > 1}
+
+    warnings = []
+    if missing:
+        warnings.append(html.Div(f"Missing required input(s): {', '.join(missing)}.", className="run-error"))
+    if dup_roles:
+        warnings.append(html.Div(
+            "Multiple files assigned to: " + ", ".join(ROLE_LABELS[r] for r in dup_roles) + " — only the last one listed will be used.",
+            className="run-warning",
+        ))
+
+    return list_children, warnings, bool(missing)
 
 
 @app.callback(
     Output("results-container", "children"),
     Output("run-error", "children"),
     Input("run-button", "n_clicks"),
-    State("upload-paths", "data"),
+    State("basket-items", "data"),
     State("session-id", "data"),
     prevent_initial_call=True,
 )
-def on_run(n_clicks, paths_store, session_id):
-    paths_store = paths_store or {}
-    missing = [INPUT_LABELS[k] for k in REQUIRED_INPUTS if k not in paths_store]
+def on_run(n_clicks, items, session_id):
+    items = items or []
+    role_paths = {it["role"]: it["paths"] for it in items if it["role"]}  # last match wins on duplicates
+
+    missing = [ROLE_LABELS[r] for r in REQUIRED_ROLES if r not in role_paths]
     if missing:
         return dash.no_update, html.Div(f"Missing required input(s): {', '.join(missing)}.", className="run-error")
 
@@ -324,11 +484,11 @@ def on_run(n_clicks, paths_store, session_id):
 
     try:
         result = compute_canopy_cover(
-            orthophoto_path=paths_store["ortho"],
-            dsm_path=paths_store["dsm"],
-            dtm_path=paths_store["dtm"],
-            boundary_path=_pick_vector_path(paths_store["boundary"]),
-            planting_rows_path=_pick_vector_path(paths_store["rows"]) if "rows" in paths_store else None,
+            orthophoto_path=role_paths["ortho"][0],
+            dsm_path=role_paths["dsm"][0],
+            dtm_path=role_paths["dtm"][0],
+            boundary_path=_pick_vector_path(role_paths["boundary"]),
+            planting_rows_path=_pick_vector_path(role_paths["rows"]) if "rows" in role_paths else None,
             config=CanopyConfig(),
             outdir=str(results_dir),
             plot_name=session_id,

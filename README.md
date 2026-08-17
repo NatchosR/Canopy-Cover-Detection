@@ -40,16 +40,19 @@ venv/Scripts/python app.py   # Windows
 # venv/bin/python app.py     # macOS/Linux
 ```
 
-Then open **http://localhost:8050**. Drag and drop your own DSM, DTM,
-orthophoto, and land-boundary files (a planting-row layer is optional and
-improves young-tree detection accuracy), click **Run Canopy Cover
-Detection**, and the overlay + 3 KPIs appear alongside download links for
-every output. Everything runs locally on your machine — files are never
-uploaded anywhere else.
+Then open **http://localhost:8050**. Drop all your files into the one
+basket at once — DSM, DTM, orthophoto, land boundary (required), and
+optionally a planting-row layer (improves young-tree detection accuracy).
+Files are sorted automatically by filename/content, each with an editable
+role dropdown in case anything gets misclassified. The **Run Canopy Cover
+Detection** button stays disabled with a warning until every required
+input is covered; once you click it, the overlay + 3 KPIs appear alongside
+download links for every output. Everything runs locally on your machine —
+files are never uploaded anywhere else.
 
 Accepted vector formats: `.gpkg`, `.geojson`. Shapefiles are supported too —
-drop the whole bundle (`.shp` + `.shx` + `.dbf` + `.prj`) onto the same
-drop zone at once.
+drop the whole bundle (`.shp` + `.shx` + `.dbf` + `.prj`) into the basket
+together.
 
 ## Library / CLI usage
 
